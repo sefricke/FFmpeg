@@ -38,6 +38,7 @@ extern const AVInputFormat  ff_gdigrab_demuxer;
 extern const AVInputFormat  ff_iec61883_demuxer;
 extern const AVInputFormat  ff_jack_demuxer;
 extern const AVInputFormat  ff_kmsgrab_demuxer;
+extern const AVOutputFormat ff_kms_muxer;
 extern const AVInputFormat  ff_lavfi_demuxer;
 extern const AVInputFormat  ff_openal_demuxer;
 extern const AVOutputFormat ff_opengl_muxer;
