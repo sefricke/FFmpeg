@@ -442,7 +442,7 @@ static int v4l2_request_try_format(AVCodecContext *avctx, enum v4l2_buf_type typ
 
     while (ioctl(ctx->video_fd, VIDIOC_ENUM_FMT, &fmtdesc) >= 0) {
         if (fmtdesc.pixelformat == pixelformat)
-            return 0;
+            return v4l2_request_try_framesize(avctx, pixelformat);
 
         fmtdesc.index++;
     }
