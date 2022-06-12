@@ -29,6 +29,8 @@ typedef struct V4L2RequestControlsHEVC {
     struct v4l2_ctrl_hevc_decode_params dec_params;
     struct v4l2_ctrl_hevc_scaling_matrix scaling_matrix;
     struct v4l2_ctrl_hevc_slice_params slice_params[MAX_SLICES];
+    __u32 *entry_point_offsets;
+    unsigned int num_entry_point_offsets;
     int first_slice;
     int num_slices; //TODO: this should be in control
 } V4L2RequestControlsHEVC;
@@ -109,6 +111,8 @@ static void fill_dec_params(struct v4l2_ctrl_hevc_decode_params *dec_params, con
 
     *dec_params = (struct v4l2_ctrl_hevc_decode_params) {
         .pic_order_cnt_val = pic->poc, /* FIXME: is this same as slice_params->slice_pic_order_cnt ? */
+        .short_term_ref_pic_set_size = sh->short_term_ref_pic_set_size,
+        .long_term_ref_pic_set_size = sh->long_term_ref_pic_set_size,
 	.num_poc_st_curr_before = h->rps[ST_CURR_BEF].nb_refs,
         .num_poc_st_curr_after = h->rps[ST_CURR_AFT].nb_refs,
         .num_poc_lt_curr = h->rps[LT_CURR].nb_refs,
@@ -125,9 +129,7 @@ static void fill_dec_params(struct v4l2_ctrl_hevc_decode_params *dec_params, con
             if (frame->flags & HEVC_FRAME_FLAG_LONG_REF)
                 entry->flags |= V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE;
 
-            /* TODO: Interleaved: Get the POC for each field. */
-            entry->pic_order_cnt[0] = frame->poc;
-            entry->pic_order_cnt[1] = frame->poc;
+            entry->pic_order_cnt_val = frame->poc;
         }
     }
 
@@ -139,7 +141,6 @@ static void fill_dec_params(struct v4l2_ctrl_hevc_decode_params *dec_params, con
     if (IS_IDR(h))
         dec_params->flags |= V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC;
 
-    /* FIXME: is this really frame property? */
     if (sh->no_output_of_prior_pics_flag)
         dec_params->flags |= V4L2_HEVC_DECODE_PARAM_FLAG_NO_OUTPUT_OF_PRIOR;
 
@@ -150,10 +151,12 @@ static void fill_dec_params(struct v4l2_ctrl_hevc_decode_params *dec_params, con
     }
 }
 
-static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
-                                                struct v4l2_ctrl_hevc_decode_params *dec_params,
-                                                struct v4l2_ctrl_hevc_slice_params *slice_params)
+static int v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
+                                               V4L2RequestControlsHEVC *controls,
+                                               int slice)
 {
+    struct v4l2_ctrl_hevc_slice_params *slice_params = &controls->slice_params[slice];
+    struct v4l2_ctrl_hevc_decode_params *dec_params = &controls->dec_params;
     const HEVCFrame *pic = h->ref;
     const SliceHeader *sh = &h->sh;
     RefPicList *rpl;
@@ -161,10 +164,8 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
 
     *slice_params = (struct v4l2_ctrl_hevc_slice_params) {
         .bit_size = 0,
-        .data_bit_offset = get_bits_count(&h->HEVClc->gb),
-
-        /* ISO/IEC 23008-2, ITU-T Rec. H.265: General slice segment header */
-        .slice_segment_addr = sh->slice_segment_addr,
+        .data_byte_offset = (get_bits_count(&h->HEVClc->gb) + 1 + 7) / 8,
+        .num_entry_point_offsets = sh->num_entry_point_offsets,
 
         /* ISO/IEC 23008-2, ITU-T Rec. H.265: NAL unit header */
         .nal_unit_type = h->nal_unit_type,
@@ -190,6 +191,8 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
         /* ISO/IEC 23008-2, ITU-T Rec. H.265: Picture timing SEI message */
         .pic_struct = h->sei.picture_timing.picture_struct,
 
+        /* ISO/IEC 23008-2, ITU-T Rec. H.265: General slice segment header */
+        .slice_segment_addr = sh->slice_segment_addr,
         .short_term_ref_pic_set_size = sh->short_term_ref_pic_set_size,
         .long_term_ref_pic_set_size = sh->long_term_ref_pic_set_size,
     };
@@ -211,6 +214,8 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
 
     if (sh->collocated_list == L0)
         slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_COLLOCATED_FROM_L0;
+
+    /* TODO: V4L2_HEVC_SLICE_PARAMS_FLAG_USE_INTEGER_MV */
 
     if (sh->disable_deblocking_filter_flag)
         slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_DEBLOCKING_FILTER_DISABLED;
@@ -235,14 +240,18 @@ static void v4l2_request_hevc_fill_slice_params(const HEVCContext *h,
 
     v4l2_request_hevc_fill_pred_table(h, &slice_params->pred_weight_table);
 
-    slice_params->num_entry_point_offsets = sh->num_entry_point_offsets;
-    if (slice_params->num_entry_point_offsets > 256) {
-        slice_params->num_entry_point_offsets = 256;
-        av_log(NULL, AV_LOG_ERROR, "%s: Currently only 256 entry points are supported, but slice has %d entry points.\n", __func__, sh->num_entry_point_offsets);
+    if (controls->num_entry_point_offsets < sh->num_entry_point_offsets) {
+        av_freep(&controls->entry_point_offsets);
+        controls->entry_point_offsets = av_mallocz(sizeof(*controls->entry_point_offsets) * sh->num_entry_point_offsets);
+        if (!controls->entry_point_offsets)
+            return AVERROR(ENOMEM);
+        controls->num_entry_point_offsets = sh->num_entry_point_offsets;
     }
 
-    for (i = 0; i < slice_params->num_entry_point_offsets; i++)
-        slice_params->entry_point_offset_minus1[i] = sh->entry_point_offset[i] - 1;
+    for (i = 0; i < sh->num_entry_point_offsets; i++)
+        controls->entry_point_offsets[i] = sh->entry_point_offset[i];
+
+    return 0;
 }
 
 static void fill_sps(struct v4l2_ctrl_hevc_sps *ctrl, const HEVCContext *h)
@@ -342,8 +351,6 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
     /* ISO/IEC 23008-2, ITU-T Rec. H.265: Picture parameter set */
     controls->pps = (struct v4l2_ctrl_hevc_pps) {
         .pic_parameter_set_id = sh->pps_id,
-        .num_ref_idx_l0_default_active_minus1 = pps->num_ref_idx_l0_default_active - 1,
-        .num_ref_idx_l1_default_active_minus1 = pps->num_ref_idx_l1_default_active - 1,
         .num_extra_slice_header_bits = pps->num_extra_slice_header_bits,
         .num_ref_idx_l0_default_active_minus1 = pps->num_ref_idx_l0_default_active - 1,
         .num_ref_idx_l1_default_active_minus1 = pps->num_ref_idx_l1_default_active - 1,
@@ -432,6 +439,7 @@ static int v4l2_request_hevc_start_frame(AVCodecContext *avctx,
 
     controls->first_slice = 1;
     controls->num_slices = 0;
+    controls->num_entry_point_offsets = 0;
 
     return ff_v4l2_request_reset_frame(avctx, h->ref->frame);
 }
@@ -440,42 +448,52 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
 {
     const HEVCContext *h = avctx->priv_data;
     V4L2RequestControlsHEVC *controls = h->ref->hwaccel_picture_private;
+    struct v4l2_ctrl_hevc_slice_params *slice_params = controls->slice_params;
     V4L2RequestContextHEVC *ctx = avctx->internal->hwaccel_priv_data;
+    int num_controls;
 
     struct v4l2_ext_control control[] = {
         {
-            .id = V4L2_CID_MPEG_VIDEO_HEVC_SPS,
+            .id = V4L2_CID_STATELESS_HEVC_SPS,
             .ptr = &controls->sps,
             .size = sizeof(controls->sps),
         },
         {
-            .id = V4L2_CID_MPEG_VIDEO_HEVC_PPS,
+            .id = V4L2_CID_STATELESS_HEVC_PPS,
             .ptr = &controls->pps,
             .size = sizeof(controls->pps),
         },
         {
-            .id = V4L2_CID_MPEG_VIDEO_HEVC_DECODE_PARAMS,
+            .id = V4L2_CID_STATELESS_HEVC_DECODE_PARAMS,
             .ptr = &controls->dec_params,
             .size = sizeof(controls->dec_params),
         },
         {
-            .id = V4L2_CID_MPEG_VIDEO_HEVC_SCALING_MATRIX,
+            .id = V4L2_CID_STATELESS_HEVC_SCALING_MATRIX,
             .ptr = &controls->scaling_matrix,
             .size = sizeof(controls->scaling_matrix),
         },
         {
-            .id = V4L2_CID_MPEG_VIDEO_HEVC_SLICE_PARAMS,
+            .id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
             .ptr = &controls->slice_params,
-            .size = sizeof(controls->slice_params[0]) * FFMAX(FFMIN(controls->num_slices, MAX_SLICES), ctx->max_slices),
+            .size = sizeof(controls->slice_params[0]) * controls->num_slices,
+        },
+        {
+            .id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS,
+            .ptr = controls->entry_point_offsets,
+            .size = sizeof(*controls->entry_point_offsets) * slice_params->num_entry_point_offsets,
         },
     };
 
-    if (ctx->decode_mode == V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_SLICE_BASED)
-        return ff_v4l2_request_decode_slice(avctx, h->ref->frame, control, FF_ARRAY_ELEMS(control), controls->first_slice, last_slice);
+    num_controls = FF_ARRAY_ELEMS(control);
+    /* skip entry points offsets control if no entry points are present */
+    if (!slice_params->num_entry_point_offsets)
+        --num_controls;
 
-    controls->sps.num_slices = controls->num_slices;
+    if (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED)
+        return ff_v4l2_request_decode_slice(avctx, h->ref->frame, control, num_controls, controls->first_slice, last_slice);
 
-    return ff_v4l2_request_decode_frame(avctx, h->ref->frame, control, FF_ARRAY_ELEMS(control));
+    return ff_v4l2_request_decode_frame(avctx, h->ref->frame, control, num_controls);
 }
 
 static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *buffer, uint32_t size)
@@ -486,7 +504,7 @@ static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *
     V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->ref->frame->data[0];
     int ret, slice = FFMIN(controls->num_slices, MAX_SLICES - 1);
 
-    if (ctx->decode_mode == V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_SLICE_BASED && slice) {
+    if (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED && slice) {
         ret = v4l2_request_hevc_queue_decode(avctx, 0);
         if (ret)
             return ret;
@@ -496,9 +514,11 @@ static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *
         controls->first_slice = 0;
     }
 
-    v4l2_request_hevc_fill_slice_params(h, &controls->dec_params, &controls->slice_params[slice]);
+    ret = v4l2_request_hevc_fill_slice_params(h, controls, slice);
+    if (ret)
+        return ret;
 
-    if (ctx->start_code == V4L2_MPEG_VIDEO_HEVC_START_CODE_ANNEX_B) {
+    if (ctx->start_code == V4L2_STATELESS_HEVC_START_CODE_ANNEX_B) {
         ret = ff_v4l2_request_append_output_buffer(avctx, h->ref->frame, nalu_slice_start_code, 3);
         if (ret)
             return ret;
@@ -515,7 +535,15 @@ static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *
 
 static int v4l2_request_hevc_end_frame(AVCodecContext *avctx)
 {
-    return v4l2_request_hevc_queue_decode(avctx, 1);
+    const HEVCContext *h = avctx->priv_data;
+    V4L2RequestControlsHEVC *controls = h->ref->hwaccel_picture_private;
+    int ret;
+
+    ret = v4l2_request_hevc_queue_decode(avctx, 1);
+
+    av_freep(&controls->entry_point_offsets);
+
+    return ret;
 }
 
 static int v4l2_request_hevc_set_controls(AVCodecContext *avctx)
@@ -524,23 +552,23 @@ static int v4l2_request_hevc_set_controls(AVCodecContext *avctx)
     int ret;
 
     struct v4l2_ext_control control[] = {
-        { .id = V4L2_CID_MPEG_VIDEO_HEVC_DECODE_MODE, },
-        { .id = V4L2_CID_MPEG_VIDEO_HEVC_START_CODE, },
+        { .id = V4L2_CID_STATELESS_HEVC_DECODE_MODE, },
+        { .id = V4L2_CID_STATELESS_HEVC_START_CODE, },
     };
     struct v4l2_query_ext_ctrl slice_params = {
-        .id = V4L2_CID_MPEG_VIDEO_HEVC_SLICE_PARAMS,
+        .id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
     };
 
-    ctx->decode_mode = ff_v4l2_request_query_control_default_value(avctx, V4L2_CID_MPEG_VIDEO_HEVC_DECODE_MODE);
-    if (ctx->decode_mode != V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_SLICE_BASED &&
-        ctx->decode_mode != V4L2_MPEG_VIDEO_HEVC_DECODE_MODE_FRAME_BASED) {
+    ctx->decode_mode = ff_v4l2_request_query_control_default_value(avctx, V4L2_CID_STATELESS_HEVC_DECODE_MODE);
+    if (ctx->decode_mode != V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED &&
+        ctx->decode_mode != V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED) {
         av_log(avctx, AV_LOG_ERROR, "%s: unsupported decode mode, %d\n", __func__, ctx->decode_mode);
         return AVERROR(EINVAL);
     }
 
-    ctx->start_code = ff_v4l2_request_query_control_default_value(avctx, V4L2_CID_MPEG_VIDEO_HEVC_START_CODE);
-    if (ctx->start_code != V4L2_MPEG_VIDEO_HEVC_START_CODE_NONE &&
-        ctx->start_code != V4L2_MPEG_VIDEO_HEVC_START_CODE_ANNEX_B) {
+    ctx->start_code = ff_v4l2_request_query_control_default_value(avctx, V4L2_CID_STATELESS_HEVC_START_CODE);
+    if (ctx->start_code != V4L2_STATELESS_HEVC_START_CODE_NONE &&
+        ctx->start_code != V4L2_STATELESS_HEVC_START_CODE_ANNEX_B) {
         av_log(avctx, AV_LOG_ERROR, "%s: unsupported start code, %d\n", __func__, ctx->start_code);
         return AVERROR(EINVAL);
     }
@@ -569,7 +597,7 @@ static int v4l2_request_hevc_init(AVCodecContext *avctx)
 
     struct v4l2_ext_control control[] = {
         {
-            .id = V4L2_CID_MPEG_VIDEO_HEVC_SPS,
+            .id = V4L2_CID_STATELESS_HEVC_SPS,
             .ptr = &sps,
             .size = sizeof(sps),
         },
