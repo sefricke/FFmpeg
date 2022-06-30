@@ -450,7 +450,7 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
     V4L2RequestControlsHEVC *controls = h->ref->hwaccel_picture_private;
     struct v4l2_ctrl_hevc_slice_params *slice_params = controls->slice_params;
     V4L2RequestContextHEVC *ctx = avctx->internal->hwaccel_priv_data;
-    int num_controls;
+    int num_controls = 4;
 
     struct v4l2_ext_control control[] = {
         {
@@ -474,21 +474,35 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
             .size = sizeof(controls->scaling_matrix),
         },
         {
-            .id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
+        /* Reserve a slot for V4L2_CID_STATELESS_HEVC_SLICE_PARAMS
+           .id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
             .ptr = &controls->slice_params,
             .size = sizeof(controls->slice_params[0]) * controls->num_slices,
+        */
         },
         {
+        /* Reserve a slot for V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS
             .id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS,
             .ptr = controls->entry_point_offsets,
             .size = sizeof(*controls->entry_point_offsets) * slice_params->num_entry_point_offsets,
+        */
         },
     };
 
-    num_controls = FF_ARRAY_ELEMS(control);
-    /* skip entry points offsets control if no entry points are present */
-    if (!slice_params->num_entry_point_offsets)
-        --num_controls;
+    if (ctx->max_slices) {
+        control[num_controls].id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
+        control[num_controls].ptr = &controls->slice_params,
+        control[num_controls].size = sizeof(controls->slice_params[0]) * controls->num_slices,
+        num_controls++;
+
+	/* add entry points offsets control if entry points are present */
+        if (slice_params->num_entry_point_offsets) {
+            control[num_controls].id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS,
+            control[num_controls].ptr = controls->entry_point_offsets,
+            control[num_controls].size = sizeof(*controls->entry_point_offsets) * slice_params->num_entry_point_offsets,
+            num_controls++;
+        }
+    }
 
     if (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED)
         return ff_v4l2_request_decode_slice(avctx, h->ref->frame, control, num_controls, controls->first_slice, last_slice);
@@ -573,11 +587,11 @@ static int v4l2_request_hevc_set_controls(AVCodecContext *avctx)
         return AVERROR(EINVAL);
     }
 
+    ctx->max_slices = 0;
     ret = ff_v4l2_request_query_control(avctx, &slice_params);
-    if (ret)
-        return ret;
+    if (!ret)
+        ctx->max_slices = slice_params.elems;
 
-    ctx->max_slices = slice_params.elems;
     if (ctx->max_slices > MAX_SLICES) {
         av_log(avctx, AV_LOG_ERROR, "%s: unsupported max slices, %d\n", __func__, ctx->max_slices);
         return AVERROR(EINVAL);
