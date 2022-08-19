@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <stdbool.h>
 #include "hevcdec.h"
 #include "hwconfig.h"
 #include "v4l2_request.h"
@@ -40,9 +41,16 @@ typedef struct V4L2RequestContextHEVC {
     int decode_mode;
     int start_code;
     int max_slices;
+    bool support_scaling_matrix;
+    bool support_slice_parameters;
+    bool support_entry_point_offsets;
 } V4L2RequestContextHEVC;
 
 static uint8_t nalu_slice_start_code[] = { 0x00, 0x00, 0x01 };
+
+static bool is_frame_based(V4L2RequestContextHEVC*);
+static bool is_slice_based(V4L2RequestContextHEVC*);
+static bool is_frame_based_with_slices(V4L2RequestContextHEVC*);
 
 static void v4l2_request_hevc_fill_pred_table(const HEVCContext *h, struct v4l2_hevc_pred_weight_table *table)
 {
@@ -504,7 +512,7 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
         }
     }
 
-    if (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED)
+    if (is_slice_based(ctx))
         return ff_v4l2_request_decode_slice(avctx, h->ref->frame, control, num_controls, controls->first_slice, last_slice);
 
     return ff_v4l2_request_decode_frame(avctx, h->ref->frame, control, num_controls);
@@ -518,7 +526,7 @@ static int v4l2_request_hevc_decode_slice(AVCodecContext *avctx, const uint8_t *
     V4L2RequestDescriptor *req = (V4L2RequestDescriptor*)h->ref->frame->data[0];
     int ret, slice = FFMIN(controls->num_slices, MAX_SLICES - 1);
 
-    if (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED && slice) {
+    if (is_slice_based(ctx) && slice) {
         ret = v4l2_request_hevc_queue_decode(avctx, 0);
         if (ret)
             return ret;
@@ -560,6 +568,33 @@ static int v4l2_request_hevc_end_frame(AVCodecContext *avctx)
     return ret;
 }
 
+/*
+ * Example: Hantro G2
+ */
+static bool is_frame_based(V4L2RequestContextHEVC *ctx)
+{
+    return (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED) &&
+            !ctx->support_slice_parameters;
+}
+
+/*
+ * Example: Cedrus (Allwinner)
+ */
+static bool is_slice_based(V4L2RequestContextHEVC *ctx)
+{
+    return ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED;
+		
+}
+
+/*
+ * Example: Rockchip Video decoder (RkVDEC)
+ */
+static bool is_frame_based_with_slices(V4L2RequestContextHEVC *ctx)
+{
+    return (ctx->decode_mode == V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED) &&
+            ctx->support_slice_parameters;
+}
+
 static int v4l2_request_hevc_set_controls(AVCodecContext *avctx)
 {
     V4L2RequestContextHEVC *ctx = avctx->internal->hwaccel_priv_data;
@@ -574,8 +609,7 @@ static int v4l2_request_hevc_set_controls(AVCodecContext *avctx)
     };
 
     ctx->decode_mode = ff_v4l2_request_query_control_default_value(avctx, V4L2_CID_STATELESS_HEVC_DECODE_MODE);
-    if (ctx->decode_mode != V4L2_STATELESS_HEVC_DECODE_MODE_SLICE_BASED &&
-        ctx->decode_mode != V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED) {
+    if (!is_slice_based(ctx) && !is_frame_based(ctx) && !is_frame_based_with_slices(ctx)) {
         av_log(avctx, AV_LOG_ERROR, "%s: unsupported decode mode, %d\n", __func__, ctx->decode_mode);
         return AVERROR(EINVAL);
     }
@@ -586,6 +620,13 @@ static int v4l2_request_hevc_set_controls(AVCodecContext *avctx)
         av_log(avctx, AV_LOG_ERROR, "%s: unsupported start code, %d\n", __func__, ctx->start_code);
         return AVERROR(EINVAL);
     }
+
+    ctx->support_scaling_matrix =
+        ff_v4l2_request_query_control_size(avctx, V4L2_CID_STATELESS_HEVC_SCALING_MATRIX, NULL);
+    ctx->support_slice_parameters =
+        ff_v4l2_request_query_control_size(avctx, V4L2_CID_STATELESS_HEVC_SLICE_PARAMS, NULL);
+    ctx->support_entry_point_offsets =
+        ff_v4l2_request_query_control_size(avctx, V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS, NULL);
 
     ctx->max_slices = 0;
     ret = ff_v4l2_request_query_control(avctx, &slice_params);
