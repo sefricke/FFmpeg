@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <stdbool.h>
 #include <drm_fourcc.h>
 #include <linux/media.h>
 #include <sys/mman.h>
@@ -126,6 +127,29 @@ int ff_v4l2_request_query_control(AVCodecContext *avctx, struct v4l2_query_ext_c
     }
 
     return 0;
+}
+
+int ff_v4l2_request_query_control_size(AVCodecContext *avctx, unsigned int control_id,
+				       unsigned int *control_size)
+{
+    int ret;
+    V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
+
+    struct v4l2_query_ext_ctrl control = {
+        .id = control_id,
+    };
+
+    if (control_size)
+	    *control_size = 0;
+
+
+    ret = ioctl(ctx->video_fd, VIDIOC_QUERY_EXT_CTRL, control);
+    if (ret < 0)
+	    return false;
+
+    if (control_size)
+	    *control_size = control.elem_size;
+    return true;
 }
 
 int ff_v4l2_request_query_control_default_value(AVCodecContext *avctx, uint32_t id)
