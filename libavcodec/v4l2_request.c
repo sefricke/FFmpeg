@@ -22,6 +22,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h> // for close
 
 #include <sys/sysmacros.h>
 #include <libudev.h>
@@ -956,7 +958,7 @@ static void v4l2_request_frame_free(void *opaque, uint8_t *data)
     av_free(data);
 }
 
-static AVBufferRef *v4l2_request_frame_alloc(void *opaque, int size)
+static AVBufferRef *v4l2_request_frame_alloc(void *opaque, size_t size)
 {
     AVCodecContext *avctx = opaque;
     V4L2RequestContext *ctx = avctx->internal->hwaccel_priv_data;
