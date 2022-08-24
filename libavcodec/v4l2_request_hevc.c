@@ -22,7 +22,7 @@
 #include "v4l2_request.h"
 #include "internal.h"
 
-#define MAX_SLICES 16
+#define MAX_SLICES 600
 
 typedef struct V4L2RequestControlsHEVC {
     struct v4l2_ctrl_hevc_sps sps;
