@@ -505,7 +505,7 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
 		control[num_controls].size = sizeof(controls->scaling_matrix);
 		num_controls++;
     }
-    if (ctx->max_slices) {
+    if (!is_frame_based(ctx) && controls->num_slices) {
         control[num_controls].id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
         control[num_controls].ptr = &controls->slice_params,
         control[num_controls].size = sizeof(controls->slice_params[0]) * controls->num_slices,
