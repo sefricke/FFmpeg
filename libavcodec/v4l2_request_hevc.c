@@ -20,6 +20,7 @@
 #include "hwconfig.h"
 #include "v4l2_request.h"
 #include "hevc-ctrls.h"
+#include "internal.h"
 
 #define MAX_SLICES 16
 
