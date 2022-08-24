@@ -458,7 +458,7 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
     V4L2RequestControlsHEVC *controls = h->ref->hwaccel_picture_private;
     struct v4l2_ctrl_hevc_slice_params *slice_params = controls->slice_params;
     V4L2RequestContextHEVC *ctx = avctx->internal->hwaccel_priv_data;
-    int num_controls = 4;
+    int num_controls = 3;
 
     struct v4l2_ext_control control[] = {
         {
@@ -477,9 +477,11 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
             .size = sizeof(controls->dec_params),
         },
         {
+        /* Reserve a slot for V4L2_CID_STATELESS_HEVC_SCALING_MATRIX
             .id = V4L2_CID_STATELESS_HEVC_SCALING_MATRIX,
             .ptr = &controls->scaling_matrix,
             .size = sizeof(controls->scaling_matrix),
+        */
         },
         {
         /* Reserve a slot for V4L2_CID_STATELESS_HEVC_SLICE_PARAMS
@@ -497,6 +499,12 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
         },
     };
 
+    if (ctx->support_scaling_matrix) {
+		control[num_controls].id = V4L2_CID_STATELESS_HEVC_SCALING_MATRIX;
+		control[num_controls].ptr = &controls->scaling_matrix;
+		control[num_controls].size = sizeof(controls->scaling_matrix);
+		num_controls++;
+    }
     if (ctx->max_slices) {
         control[num_controls].id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,
         control[num_controls].ptr = &controls->slice_params,
