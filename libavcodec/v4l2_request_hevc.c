@@ -511,11 +511,11 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
         control[num_controls].size = sizeof(controls->slice_params[0]) * controls->num_slices,
         num_controls++;
 
-	/* add entry points offsets control if entry points are present */
-        if (slice_params->num_entry_point_offsets) {
-            control[num_controls].id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS,
-            control[num_controls].ptr = controls->entry_point_offsets,
-            control[num_controls].size = sizeof(*controls->entry_point_offsets) * slice_params->num_entry_point_offsets,
+        /* add entry points offsets control if entry points are present and supported by the driver */
+        if (ctx->support_entry_point_offsets && slice_params->num_entry_point_offsets) {
+            control[num_controls].id = V4L2_CID_STATELESS_HEVC_ENTRY_POINT_OFFSETS;
+            control[num_controls].ptr = controls->entry_point_offsets;
+            control[num_controls].size = sizeof(*controls->entry_point_offsets) * slice_params->num_entry_point_offsets;
             num_controls++;
         }
     }
