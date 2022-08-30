@@ -537,7 +537,6 @@ static int v4l2_request_hevc_queue_decode(AVCodecContext *avctx, int last_slice)
 
     if (is_slice_based(ctx))
         return ff_v4l2_request_decode_slice(avctx, h->ref->frame, control, num_controls, controls->first_slice, last_slice);
-
     return ff_v4l2_request_decode_frame(avctx, h->ref->frame, control, num_controls);
 }
 
